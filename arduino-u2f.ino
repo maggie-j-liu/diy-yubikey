@@ -1,5 +1,8 @@
 #include <Adafruit_TinyUSB.h>
 #include "u2f_hid.h"
+#include <uECC.h>
+#include "keys.h"
+#include <sha256.h>
 
 uint8_t const desc_hid_report[] = {0x06, 0xD0, 0xF1, 0x09, 0x01, 0xA1, 0x01, 0x09, 0x20, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x81, 0x02, 0x09, 0x21, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x91, 0x02, 0xC0};
 
@@ -18,6 +21,7 @@ void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 
 void setup()
 {
+	randomSeed(analogRead(0));
 	usb_hid.setReportCallback(NULL, set_report_callback);
 	usb_hid.begin();
 
@@ -69,6 +73,7 @@ void send_response()
 
 void handle_init()
 {
+	Serial.println("handling init");
 	int new_cid = 1;
 	data_len = 17;
 	// since we are using message as the response buffer, the nonce doesn't change
@@ -81,14 +86,77 @@ void handle_init()
 	send_response();
 }
 
+void handle_msg()
+{
+	Serial.println("handling msg");
+	uint8_t ins = message[1];
+	uint8_t p1 = message[2];
+	if (ins == U2F_REGISTER)
+	{
+		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
+		// TODO: validate that req_data_len == 64
+
+		// yubico's key wrapping algorithm
+		// https://www.yubico.com/blog/yubicos-u2f-key-wrapping/
+
+		uint8_t challenge_param[64], application_param[64];
+		memcpy(challenge_param, message + 7, 32);
+		memcpy(application_param, message + 7 + 32, 32);
+		uint8_t public_key[65];
+		// uint8_t private_key[32];
+		public_key[0] = 0x04;
+		// print_buffer(public_key, 65);
+		// uECC_make_key(public_key + 1, private_key, uECC_secp256r1());
+		uint8_t *hash;
+		uint8_t nonce[16];
+		for (int i = 0; i < 16; i++)
+		{
+			nonce[i] = random(256) & 0xFF;
+		}
+		print_buffer(nonce, 16);
+		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
+		Sha256.print((char *)application_param);
+		Sha256.print((char *)nonce);
+		uint8_t *private_key = Sha256.resultHmac();
+		int computed = uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
+		Serial.print("computed public key: ");
+		Serial.println(computed);
+
+		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
+		Sha256.print((char *)application_param);
+		Sha256.print((char *)private_key);
+		uint8_t *mac = Sha256.resultHmac();
+
+		message[0] = 0x05;
+		memcpy(message + 1, public_key, 65);
+		message[66] = 16 + 32; // length of key handle
+		memcpy(message + 67, nonce, 16);
+		memcpy(message + 83, mac, 32);
+		memcpy(message + 115, XXX_certificate, 319);
+		// print_buffer(public_key, 65);
+	}
+	else if (ins == U2F_AUTHENTICATE || ins == U2F_VERSION)
+	{
+		Serial.println("unimplemented u2f command");
+	}
+	else
+	{
+		// TODO: send error
+		Serial.println("ERROR: UNKNOWN U2F COMMAND");
+	}
+}
+
 void handle()
 {
 	if (cmd == U2FHID_INIT)
 	{
-		Serial.println("init command");
 		handle_init();
 	}
-	else if (cmd == U2FHID_MSG || cmd == U2FHID_PING || cmd == U2FHID_SYNC)
+	else if (cmd == U2FHID_MSG)
+	{
+		handle_msg();
+	}
+	else if (cmd == U2FHID_PING || cmd == U2FHID_SYNC)
 	{
 		Serial.println("unimplemented command");
 	}
@@ -183,7 +251,7 @@ void parse_packet(uint8_t const *packet)
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void set_report_callback(uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
 {
-	print_buffer(buffer);
+	// print_buffer(buffer);
 	parse_packet(buffer);
 
 	// echo back anything we received from host

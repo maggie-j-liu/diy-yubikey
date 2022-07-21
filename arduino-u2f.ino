@@ -8,7 +8,7 @@ uint8_t const desc_hid_report[] = {0x06, 0xD0, 0xF1, 0x09, 0x01, 0xA1, 0x01, 0x0
 
 // USB HID object.
 // desc report, desc len, protocol, interval, use out endpoint
-Adafruit_USBD_HID usb_hid(desc_hid_report, sizeof(desc_hid_report), HID_ITF_PROTOCOL_NONE, 2, true);
+Adafruit_USBD_HID usb_hid(desc_hid_report, sizeof(desc_hid_report), HID_ITF_PROTOCOL_NONE, 1, true);
 
 void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 {
@@ -17,6 +17,15 @@ void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 		Serial.print(buffer[i], HEX);
 		Serial.print(" ");
 	}
+}
+
+int rng_func(uint8_t *dest, unsigned size)
+{
+	for (int i = 0; i < size; i++)
+	{
+		dest[i] = random(256);
+	}
+	return 1;
 }
 
 void setup()
@@ -30,15 +39,16 @@ void setup()
 	{
 		delay(1);
 	}
+	uECC_set_rng(rng_func);
 }
 
 void loop()
 {
 }
 
-void write(uint8_t const *buffer)
+int write(uint8_t const *buffer)
 {
-	usb_hid.sendReport(0, buffer, PACKET_SIZE);
+	return usb_hid.sendReport(0, buffer, PACKET_SIZE);
 }
 
 bool processing_message = false;
@@ -49,7 +59,7 @@ uint8_t message[7609]; // max message payload is 7609 bytes
 int data_cursor;
 uint8_t next_cont_packet = 0;
 
-void send_response()
+void send_response(bool print = false)
 {
 	uint8_t packet[PACKET_SIZE];
 	memcpy(packet, &cid, 4);
@@ -60,8 +70,22 @@ void send_response()
 	memcpy(packet + 7, message, included);
 	next_cont_packet = 0;
 	usb_hid.sendReport(0, packet, PACKET_SIZE);
+	if (print)
+	{
+		Serial.print(packet[5], HEX);
+		Serial.print(" ");
+		Serial.println(packet[6], HEX);
+	}
+
 	while (included < data_len)
 	{
+		while (!tud_hid_ready())
+		{
+			delay(1);
+			tud_task(); // important! otherwise tud_hid_ready will always be false
+		}
+		memset(packet, 0, PACKET_SIZE);
+		memcpy(packet, &cid, 4);
 		packet[4] = next_cont_packet;
 		int to_include = min(PACKET_SIZE - 5, data_len - included);
 		memcpy(packet + 5, message + included, to_include);
@@ -99,7 +123,7 @@ void handle_msg()
 		// yubico's key wrapping algorithm
 		// https://www.yubico.com/blog/yubicos-u2f-key-wrapping/
 
-		uint8_t challenge_param[64], application_param[64];
+		uint8_t challenge_param[32], application_param[32];
 		memcpy(challenge_param, message + 7, 32);
 		memcpy(application_param, message + 7 + 32, 32);
 		uint8_t public_key[65];
@@ -113,27 +137,99 @@ void handle_msg()
 		{
 			nonce[i] = random(256) & 0xFF;
 		}
-		print_buffer(nonce, 16);
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
 		Sha256.print((char *)application_param);
 		Sha256.print((char *)nonce);
 		uint8_t *private_key = Sha256.resultHmac();
 		int computed = uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
-		Serial.print("computed public key: ");
-		Serial.println(computed);
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
 		Sha256.print((char *)application_param);
 		Sha256.print((char *)private_key);
 		uint8_t *mac = Sha256.resultHmac();
 
-		message[0] = 0x05;
-		memcpy(message + 1, public_key, 65);
-		message[66] = 16 + 32; // length of key handle
-		memcpy(message + 67, nonce, 16);
-		memcpy(message + 83, mac, 32);
-		memcpy(message + 115, XXX_certificate, 319);
-		// print_buffer(public_key, 65);
+		int idx = 0;
+		message[idx] = 0x05;
+		idx++;
+		memcpy(message + idx, public_key, 65);
+		idx += 65;
+		message[idx] = 16 + 32; // length of key handle
+		Serial.print("length of key handle: ");
+		Serial.println(message[idx], HEX);
+		idx++;
+		memcpy(message + idx, nonce, 16);
+		idx += 16;
+		memcpy(message + idx, mac, 32);
+		idx += 32;
+		memcpy(message + idx, ATTESTATION_CERT, 319);
+		idx += 319;
+
+		Sha256.init();
+		Sha256.print(0x00);
+		Sha256.print((char *)application_param);
+		Sha256.print((char *)challenge_param);
+		Sha256.print((char *)nonce);
+		Sha256.print((char *)mac);
+		Sha256.print((char *)public_key);
+		uint8_t *message_hash = Sha256.result();
+
+		uint8_t signature[64];
+		uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
+
+		// convert signature to asn.1 format
+		Serial.print("sig start: ");
+		Serial.println(idx);
+		message[idx] = 0x30;
+		idx++;
+		int b1_idx = idx;
+		idx++;
+		uint8_t b1 = 68;
+		message[idx] = 0x02;
+		idx++;
+		if (signature[0] > 0x7F)
+		{
+			message[idx] = 33;
+			idx++;
+			message[idx] = 0;
+			idx++;
+			b1++;
+		}
+		else
+		{
+			message[idx] = 32;
+			idx++;
+		}
+		memcpy(message + idx, signature, 32); // copy r value
+		idx += 32;
+		message[idx] = 0x02;
+		idx++;
+		if (signature[32] > 0x7F)
+		{
+			message[idx] = 33;
+			idx++;
+			message[idx] = 0;
+			idx++;
+			b1++;
+		}
+		else
+		{
+			message[idx] = 32;
+			idx++;
+		}
+		memcpy(message + idx, signature + 32, 32); // copy s value
+		idx += 32;
+		message[b1_idx] = b1;
+		Serial.print("sig end: ");
+		Serial.println(idx);
+		message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
+		idx++;
+		message[idx] = SW_NO_ERROR & 0xFF;
+		idx++;
+		data_len = idx;
+		Serial.print("data len: ");
+		Serial.println(data_len);
+		// TODO: get user input here
+		send_response(true);
 	}
 	else if (ins == U2F_AUTHENTICATE || ins == U2F_VERSION)
 	{
@@ -188,7 +284,13 @@ void parse_packet(uint8_t const *packet)
 		{
 			cid = packet_cid;
 			cmd = cmd_or_seq;
+			if (cmd == U2FHID_MSG)
+			{
+				Serial.println("message packet recv");
+				print_buffer(packet);
+			}
 			data_len = packet[5] << 8 | packet[6];
+			memset(message, 0, sizeof(message));
 			if (data_len <= PACKET_SIZE - 7)
 			{
 				// no continuation packets
@@ -255,5 +357,16 @@ void set_report_callback(uint8_t report_id, hid_report_type_t report_type, uint8
 	parse_packet(buffer);
 
 	// echo back anything we received from host
-	// write(buffer);
+
+	// Serial.println();
+	// Serial.println(write(buffer));
+	// while (!tud_hid_ready())
+	// {
+	// 	Serial.print("delay");
+	// 	delay(1);
+	// 	tud_task();
+	// }
+	// Serial.println(tud_hid_ready());
+	// // Serial.print("written 1");
+	// Serial.println(write(buffer));
 }

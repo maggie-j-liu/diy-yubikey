@@ -62,7 +62,10 @@ uint8_t next_cont_packet = 0;
 void send_response(bool print = false)
 {
 	uint8_t packet[PACKET_SIZE];
-	memcpy(packet, &cid, 4);
+	packet[0] = (cid >> 24) & 0xFF;
+	packet[1] = (cid >> 16) & 0xFF;
+	packet[2] = (cid >> 8) & 0xFF;
+	packet[3] = cid & 0xFF;
 	packet[4] = cmd;
 	packet[5] = (data_len >> 8) & 0xFF;
 	packet[6] = data_len & 0xFF;
@@ -84,8 +87,6 @@ void send_response(bool print = false)
 			delay(1);
 			tud_task(); // important! otherwise tud_hid_ready will always be false
 		}
-		memset(packet, 0, PACKET_SIZE);
-		memcpy(packet, &cid, 4);
 		packet[4] = next_cont_packet;
 		int to_include = min(PACKET_SIZE - 5, data_len - included);
 		memcpy(packet + 5, message + included, to_include);
@@ -101,7 +102,10 @@ void handle_init()
 	int new_cid = 1;
 	data_len = 17;
 	// since we are using message as the response buffer, the nonce doesn't change
-	memcpy(message + 8, &new_cid, 4);
+	message[8] = (new_cid >> 24) & 0xFF;
+	message[9] = (new_cid >> 16) & 0xFF;
+	message[10] = (new_cid >> 8) & 0xFF;
+	message[11] = new_cid & 0xFF;
 	message[12] = U2FHID_IF_VERSION; // protocol version
 	message[13] = 1;				 // major version
 	message[14] = 0;				 // minor version
@@ -177,7 +181,6 @@ void handle_msg()
 		uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
 
 		// convert signature to asn.1 format
-		Serial.print("sig start: ");
 		Serial.println(idx);
 		message[idx] = 0x30;
 		idx++;
@@ -219,7 +222,7 @@ void handle_msg()
 		memcpy(message + idx, signature + 32, 32); // copy s value
 		idx += 32;
 		message[b1_idx] = b1;
-		Serial.print("sig end: ");
+
 		Serial.println(idx);
 		message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
 		idx++;
@@ -231,7 +234,135 @@ void handle_msg()
 		// TODO: get user input here
 		send_response(true);
 	}
-	else if (ins == U2F_AUTHENTICATE || ins == U2F_VERSION)
+	else if (ins == U2F_AUTHENTICATE)
+	{
+		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
+		// TODO: validate that req_data_len == 64
+
+		Serial.print("control byte: 0x");
+		Serial.println(p1, HEX);
+
+		int idx = 7;
+		uint8_t challenge_param[32], application_param[32];
+		memcpy(challenge_param, message + idx, 32);
+		idx += 32;
+		memcpy(application_param, message + idx, 32);
+		idx += 32;
+
+		uint8_t key_handle_len = message[idx];
+		idx++;
+		// TODO: validate that key_handle_len is 48
+		uint8_t nonce[16];
+		uint8_t mac[32];
+		memcpy(nonce, message + idx, 16);
+		idx += 16;
+		memcpy(mac, message + idx, 32);
+
+		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
+		Sha256.print((char *)application_param);
+		Sha256.print((char *)nonce);
+		uint8_t *private_key = Sha256.resultHmac();
+
+		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
+		Sha256.print((char *)application_param);
+		Sha256.print((char *)private_key);
+		uint8_t *computed_mac = Sha256.resultHmac();
+
+		if (memcmp(mac, computed_mac, 32) != 0)
+		{
+			data_len = 2;
+			message[0] = (SW_WRONG_DATA >> 8) & 0xFF;
+			message[1] = SW_WRONG_DATA & 0xFF;
+		}
+		if (p1 == 0x07) // check only
+		{
+			// already verified key handle above, so we just return success
+			data_len = 2;
+			message[0] = (SW_CONDITIONS_NOT_SATISFIED >> 8) & 0xFF;
+			message[1] = SW_CONDITIONS_NOT_SATISFIED & 0xFF;
+		}
+		else if (p1 == 0x03 || p1 == 0x08)
+		{
+			int counter = 1;
+			uint8_t counter_bytes[4];
+			counter_bytes[0] = (counter >> 24) & 0xFF;
+			counter_bytes[1] = (counter >> 16) & 0xFF;
+			counter_bytes[2] = (counter >> 8) & 0xFF;
+			counter_bytes[3] = counter & 0xFF;
+
+			Serial.println("counter:");
+			print_buffer(counter_bytes, 4);
+
+			uint8_t user_presence = p1 == 0x03 ? 0x01 : 0x00;
+
+			Sha256.init();
+			Sha256.print((char *)application_param);
+			Sha256.print(user_presence);
+			Sha256.print((char *)counter_bytes);
+			Sha256.print((char *)challenge_param);
+			uint8_t *message_hash = Sha256.result();
+
+			uint8_t signature[64];
+			uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
+
+			// TODO: enforce user presence for 0x03
+			int idx = 0;
+			message[idx] = user_presence;
+			idx++;
+			memcpy(message + idx, counter_bytes, 4);
+			idx += 4;
+
+			// convert signature to asn.1 format
+			message[idx] = 0x30;
+			idx++;
+			int b1_idx = idx;
+			idx++;
+			uint8_t b1 = 68;
+			message[idx] = 0x02;
+			idx++;
+			if (signature[0] > 0x7F)
+			{
+				message[idx] = 33;
+				idx++;
+				message[idx] = 0;
+				idx++;
+				b1++;
+			}
+			else
+			{
+				message[idx] = 32;
+				idx++;
+			}
+			memcpy(message + idx, signature, 32); // copy r value
+			idx += 32;
+			message[idx] = 0x02;
+			idx++;
+			if (signature[32] > 0x7F)
+			{
+				message[idx] = 33;
+				idx++;
+				message[idx] = 0;
+				idx++;
+				b1++;
+			}
+			else
+			{
+				message[idx] = 32;
+				idx++;
+			}
+			memcpy(message + idx, signature + 32, 32); // copy s value
+			idx += 32;
+			message[b1_idx] = b1;
+
+			message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
+			idx++;
+			message[idx] = SW_NO_ERROR & 0xFF;
+			idx++;
+			data_len = idx;
+			send_response();
+		}
+	}
+	else if (ins == U2F_VERSION)
 	{
 		Serial.println("unimplemented u2f command");
 	}
@@ -260,7 +391,10 @@ void handle()
 	{
 		Serial.println("ERROR: UNKNOWN COMMAND");
 		uint8_t packet[PACKET_SIZE];
-		memcpy(packet, &cid, 4);
+		packet[0] = (cid >> 24) & 0xFF;
+		packet[1] = (cid >> 16) & 0xFF;
+		packet[2] = (cid >> 8) & 0xFF;
+		packet[3] = cid & 0xFF;
 		packet[4] = U2FHID_ERROR;
 		packet[5] = (1 >> 8) & 0xFF;
 		packet[6] = 1 & 0xFF;
@@ -271,8 +405,9 @@ void handle()
 
 void parse_packet(uint8_t const *packet)
 {
-	int packet_cid;
-	memcpy(&packet_cid, packet, sizeof(int));
+	int packet_cid = (packet[0] << 24) | (packet[1] << 16) | (packet[2] << 8) | packet[3];
+	Serial.print("packet cid: ");
+	Serial.println(packet_cid, HEX);
 
 	uint8_t cmd_or_seq = packet[4];
 	Serial.println(cmd_or_seq, HEX);

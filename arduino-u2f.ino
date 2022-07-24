@@ -3,12 +3,15 @@
 #include <uECC.h>
 #include "keys.h"
 #include <sha256.h>
+#include <FlashStorage.h>
 
 uint8_t const desc_hid_report[] = {0x06, 0xD0, 0xF1, 0x09, 0x01, 0xA1, 0x01, 0x09, 0x20, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x81, 0x02, 0x09, 0x21, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x91, 0x02, 0xC0};
 
 // USB HID object.
 // desc report, desc len, protocol, interval, use out endpoint
 Adafruit_USBD_HID usb_hid(desc_hid_report, sizeof(desc_hid_report), HID_ITF_PROTOCOL_NONE, 1, true);
+
+FlashStorage(counter_storage, int);
 
 void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 {
@@ -30,11 +33,12 @@ int rng_func(uint8_t *dest, unsigned size)
 
 void setup()
 {
+	Serial.begin(115200);
+
 	randomSeed(analogRead(0));
 	usb_hid.setReportCallback(NULL, set_report_callback);
 	usb_hid.begin();
 
-	Serial.begin(115200);
 	while (!TinyUSBDevice.mounted())
 	{
 		delay(1);
@@ -59,7 +63,7 @@ uint8_t message[7609]; // max message payload is 7609 bytes
 int data_cursor;
 uint8_t next_cont_packet = 0;
 
-void send_response(bool print = false)
+void send_response()
 {
 	uint8_t packet[PACKET_SIZE];
 	packet[0] = (cid >> 24) & 0xFF;
@@ -73,12 +77,6 @@ void send_response(bool print = false)
 	memcpy(packet + 7, message, included);
 	next_cont_packet = 0;
 	usb_hid.sendReport(0, packet, PACKET_SIZE);
-	if (print)
-	{
-		Serial.print(packet[5], HEX);
-		Serial.print(" ");
-		Serial.println(packet[6], HEX);
-	}
 
 	while (included < data_len)
 	{
@@ -98,7 +96,6 @@ void send_response(bool print = false)
 
 void handle_init()
 {
-	Serial.println("handling init");
 	int new_cid = 1;
 	data_len = 17;
 	// since we are using message as the response buffer, the nonce doesn't change
@@ -116,7 +113,6 @@ void handle_init()
 
 void handle_msg()
 {
-	Serial.println("handling msg");
 	uint8_t ins = message[1];
 	uint8_t p1 = message[2];
 	if (ins == U2F_REGISTER)
@@ -135,22 +131,35 @@ void handle_msg()
 		public_key[0] = 0x04;
 		// print_buffer(public_key, 65);
 		// uECC_make_key(public_key + 1, private_key, uECC_secp256r1());
-		uint8_t *hash;
 		uint8_t nonce[16];
 		for (int i = 0; i < 16; i++)
 		{
 			nonce[i] = random(256) & 0xFF;
 		}
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		Sha256.print((char *)application_param);
-		Sha256.print((char *)nonce);
-		uint8_t *private_key = Sha256.resultHmac();
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(application_param[i]);
+		}
+		for (int i = 0; i < 16; i++)
+		{
+			Sha256.write(nonce[i]);
+		}
+		uint8_t private_key[32];
+		memcpy(private_key, Sha256.resultHmac(), 32);
 		int computed = uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		Sha256.print((char *)application_param);
-		Sha256.print((char *)private_key);
-		uint8_t *mac = Sha256.resultHmac();
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(application_param[i]);
+		}
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(private_key[i]);
+		}
+		uint8_t mac[32];
+		memcpy(mac, Sha256.resultHmac(), 32);
 
 		int idx = 0;
 		message[idx] = 0x05;
@@ -158,8 +167,6 @@ void handle_msg()
 		memcpy(message + idx, public_key, 65);
 		idx += 65;
 		message[idx] = 16 + 32; // length of key handle
-		Serial.print("length of key handle: ");
-		Serial.println(message[idx], HEX);
 		idx++;
 		memcpy(message + idx, nonce, 16);
 		idx += 16;
@@ -169,19 +176,35 @@ void handle_msg()
 		idx += 319;
 
 		Sha256.init();
-		Sha256.print(0x00);
-		Sha256.print((char *)application_param);
-		Sha256.print((char *)challenge_param);
-		Sha256.print((char *)nonce);
-		Sha256.print((char *)mac);
-		Sha256.print((char *)public_key);
-		uint8_t *message_hash = Sha256.result();
+		uint8_t reserved = 0x00;
+		Sha256.write(reserved);
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(application_param[i]);
+		}
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(challenge_param[i]);
+		}
+		for (int i = 0; i < 16; i++)
+		{
+			Sha256.write(nonce[i]);
+		}
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(mac[i]);
+		}
+		for (int i = 0; i < 65; i++)
+		{
+			Sha256.write(public_key[i]);
+		}
+		uint8_t message_hash[32];
+		memcpy(message_hash, Sha256.result(), 32);
 
 		uint8_t signature[64];
-		uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
+		uECC_sign(ATTESTATION_KEY, message_hash, 32, signature, uECC_secp256r1());
 
 		// convert signature to asn.1 format
-		Serial.println(idx);
 		message[idx] = 0x30;
 		idx++;
 		int b1_idx = idx;
@@ -223,24 +246,18 @@ void handle_msg()
 		idx += 32;
 		message[b1_idx] = b1;
 
-		Serial.println(idx);
 		message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
 		idx++;
 		message[idx] = SW_NO_ERROR & 0xFF;
 		idx++;
 		data_len = idx;
-		Serial.print("data len: ");
-		Serial.println(data_len);
 		// TODO: get user input here
-		send_response(true);
+		send_response();
 	}
 	else if (ins == U2F_AUTHENTICATE)
 	{
 		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
 		// TODO: validate that req_data_len == 64
-
-		Serial.print("control byte: 0x");
-		Serial.println(p1, HEX);
 
 		int idx = 7;
 		uint8_t challenge_param[32], application_param[32];
@@ -259,14 +276,28 @@ void handle_msg()
 		memcpy(mac, message + idx, 32);
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		Sha256.print((char *)application_param);
-		Sha256.print((char *)nonce);
-		uint8_t *private_key = Sha256.resultHmac();
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(application_param[i]);
+		}
+		for (int i = 0; i < 16; i++)
+		{
+			Sha256.write(nonce[i]);
+		}
+		uint8_t private_key[32];
+		memcpy(private_key, Sha256.resultHmac(), 32);
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		Sha256.print((char *)application_param);
-		Sha256.print((char *)private_key);
-		uint8_t *computed_mac = Sha256.resultHmac();
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(application_param[i]);
+		}
+		for (int i = 0; i < 32; i++)
+		{
+			Sha256.write(private_key[i]);
+		}
+		uint8_t computed_mac[32];
+		memcpy(computed_mac, Sha256.resultHmac(), 32);
 
 		if (memcmp(mac, computed_mac, 32) != 0)
 		{
@@ -283,7 +314,7 @@ void handle_msg()
 		}
 		else if (p1 == 0x03 || p1 == 0x08)
 		{
-			int counter = 1;
+			int counter = counter_storage.read();
 			uint8_t counter_bytes[4];
 			counter_bytes[0] = (counter >> 24) & 0xFF;
 			counter_bytes[1] = (counter >> 16) & 0xFF;
@@ -291,16 +322,27 @@ void handle_msg()
 			counter_bytes[3] = counter & 0xFF;
 
 			Serial.println("counter:");
+			Serial.println(counter);
 			print_buffer(counter_bytes, 4);
 
 			uint8_t user_presence = p1 == 0x03 ? 0x01 : 0x00;
 
 			Sha256.init();
-			Sha256.print((char *)application_param);
-			Sha256.print(user_presence);
-			Sha256.print((char *)counter_bytes);
-			Sha256.print((char *)challenge_param);
-			uint8_t *message_hash = Sha256.result();
+			for (int i = 0; i < 32; i++)
+			{
+				Sha256.write(application_param[i]);
+			}
+			Sha256.write(user_presence);
+			for (int i = 0; i < 4; i++)
+			{
+				Sha256.write(counter_bytes[i]);
+			}
+			for (int i = 0; i < 32; i++)
+			{
+				Sha256.write(challenge_param[i]);
+			}
+			uint8_t message_hash[32];
+			memcpy(message_hash, Sha256.result(), 32);
 
 			uint8_t signature[64];
 			uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
@@ -359,6 +401,7 @@ void handle_msg()
 			message[idx] = SW_NO_ERROR & 0xFF;
 			idx++;
 			data_len = idx;
+			// counter_storage.write(counter + 1);
 			send_response();
 		}
 	}
@@ -406,11 +449,8 @@ void handle()
 void parse_packet(uint8_t const *packet)
 {
 	int packet_cid = (packet[0] << 24) | (packet[1] << 16) | (packet[2] << 8) | packet[3];
-	Serial.print("packet cid: ");
-	Serial.println(packet_cid, HEX);
 
 	uint8_t cmd_or_seq = packet[4];
-	Serial.println(cmd_or_seq, HEX);
 	bool is_init = cmd_or_seq >= 0x80; // if bit 7 is set, this is an init packet
 
 	if (is_init)
@@ -419,11 +459,6 @@ void parse_packet(uint8_t const *packet)
 		{
 			cid = packet_cid;
 			cmd = cmd_or_seq;
-			if (cmd == U2FHID_MSG)
-			{
-				Serial.println("message packet recv");
-				print_buffer(packet);
-			}
 			data_len = packet[5] << 8 | packet[6];
 			memset(message, 0, sizeof(message));
 			if (data_len <= PACKET_SIZE - 7)
@@ -446,7 +481,6 @@ void parse_packet(uint8_t const *packet)
 			// TODO: send error response
 			Serial.println("ERROR: BUSY");
 		}
-		Serial.println("is init");
 	}
 	else
 	{
@@ -474,7 +508,6 @@ void parse_packet(uint8_t const *packet)
 		{
 			next_cont_packet++;
 		}
-		Serial.println("is cnt");
 	}
 
 	if (!processing_message)
@@ -488,20 +521,5 @@ void parse_packet(uint8_t const *packet)
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void set_report_callback(uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
 {
-	// print_buffer(buffer);
 	parse_packet(buffer);
-
-	// echo back anything we received from host
-
-	// Serial.println();
-	// Serial.println(write(buffer));
-	// while (!tud_hid_ready())
-	// {
-	// 	Serial.print("delay");
-	// 	delay(1);
-	// 	tud_task();
-	// }
-	// Serial.println(tud_hid_ready());
-	// // Serial.print("written 1");
-	// Serial.println(write(buffer));
 }

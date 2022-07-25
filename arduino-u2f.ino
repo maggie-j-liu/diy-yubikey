@@ -4,6 +4,8 @@
 #include "keys.h"
 #include <sha256.h>
 #include <FlashStorage.h>
+#include <Adafruit_NeoPixel.h>
+#include <Adafruit_FreeTouch.h>
 
 uint8_t const desc_hid_report[] = {0x06, 0xD0, 0xF1, 0x09, 0x01, 0xA1, 0x01, 0x09, 0x20, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x81, 0x02, 0x09, 0x21, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x40, 0x91, 0x02, 0xC0};
 
@@ -12,6 +14,13 @@ uint8_t const desc_hid_report[] = {0x06, 0xD0, 0xF1, 0x09, 0x01, 0xA1, 0x01, 0x0
 Adafruit_USBD_HID usb_hid(desc_hid_report, sizeof(desc_hid_report), HID_ITF_PROTOCOL_NONE, 1, true);
 
 FlashStorage(counter_storage, int);
+
+// Create the neopixel strip with the built in definitions NUM_NEOPIXEL and PIN_NEOPIXEL
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_NEOPIXEL, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+
+// Create the two touch pads on pins 1 and 2:
+Adafruit_FreeTouch touch_pad_1 = Adafruit_FreeTouch(1, OVERSAMPLE_4, RESISTOR_50K, FREQ_MODE_NONE);
+Adafruit_FreeTouch touch_pad_2 = Adafruit_FreeTouch(2, OVERSAMPLE_4, RESISTOR_50K, FREQ_MODE_NONE);
 
 void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 {
@@ -35,9 +44,20 @@ void setup()
 {
 	Serial.begin(115200);
 
+	strip.begin();
+	strip.setBrightness(10);
+	for (int i = 0; i < strip.numPixels(); i++)
+	{
+		strip.setPixelColor(i, strip.Color(255, 0, 0));
+	}
+	strip.show();
+
 	randomSeed(analogRead(0));
 	usb_hid.setReportCallback(NULL, set_report_callback);
 	usb_hid.begin();
+
+	touch_pad_1.begin();
+	touch_pad_2.begin();
 
 	while (!TinyUSBDevice.mounted())
 	{
@@ -251,7 +271,29 @@ void handle_msg()
 		message[idx] = SW_NO_ERROR & 0xFF;
 		idx++;
 		data_len = idx;
-		// TODO: get user input here
+
+		// confirm user presence
+		for (int i = 0; i < strip.numPixels(); i++)
+		{
+			strip.setPixelColor(i, strip.Color(0, 0, 255));
+		}
+		strip.show();
+
+		while (true)
+		{
+			uint16_t touch2 = touch_pad_2.measure();
+			if (touch2 > 500)
+			{
+				Serial.print("QT 2: ");
+				Serial.println(touch2);
+				for (int i = 0; i < strip.numPixels(); i++)
+				{
+					strip.setPixelColor(i, strip.Color(255, 0, 0));
+				}
+				strip.show();
+				break;
+			}
+		}
 		send_response();
 	}
 	else if (ins == U2F_AUTHENTICATE)
@@ -347,7 +389,31 @@ void handle_msg()
 			uint8_t signature[64];
 			uECC_sign(private_key, message_hash, 32, signature, uECC_secp256r1());
 
-			// TODO: enforce user presence for 0x03
+			// enforce user presence for 0x03
+			if (p1 == 0x03)
+			{
+				for (int i = 0; i < strip.numPixels(); i++)
+				{
+					strip.setPixelColor(i, strip.Color(0, 0, 255));
+				}
+				strip.show();
+				while (true)
+				{
+					uint16_t touch2 = touch_pad_2.measure();
+					if (touch2 > 500)
+					{
+						Serial.print("QT 2: ");
+						Serial.println(touch2);
+						for (int i = 0; i < strip.numPixels(); i++)
+						{
+							strip.setPixelColor(i, strip.Color(255, 0, 0));
+						}
+						strip.show();
+						break;
+					}
+				}
+			}
+
 			int idx = 0;
 			message[idx] = user_presence;
 			idx++;
@@ -401,7 +467,7 @@ void handle_msg()
 			message[idx] = SW_NO_ERROR & 0xFF;
 			idx++;
 			data_len = idx;
-			// counter_storage.write(counter + 1);
+			counter_storage.write(counter + 1);
 			send_response();
 		}
 	}

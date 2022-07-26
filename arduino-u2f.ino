@@ -129,6 +129,7 @@ void handle_init()
 	message[15] = 1;				 // device version
 	message[16] = 0;				 // capabilities
 	send_response();
+	return;
 }
 
 void handle_msg()
@@ -138,7 +139,15 @@ void handle_msg()
 	if (ins == U2F_REGISTER)
 	{
 		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
-		// TODO: validate that req_data_len == 64
+		// validate that req_data_len == 64
+		if (req_data_len != 64)
+		{
+			data_len = 2;
+			message[0] = (SW_WRONG_LENGTH >> 8) & 0xFF;
+			message[1] = SW_WRONG_LENGTH & 0xFF;
+			send_response();
+			return;
+		}
 
 		// yubico's key wrapping algorithm
 		// https://www.yubico.com/blog/yubicos-u2f-key-wrapping/
@@ -295,11 +304,20 @@ void handle_msg()
 			}
 		}
 		send_response();
+		return;
 	}
 	else if (ins == U2F_AUTHENTICATE)
 	{
 		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
-		// TODO: validate that req_data_len == 64
+		// validate that req_data_len == 64
+		if (req_data_len != 64)
+		{
+			data_len = 2;
+			message[0] = (SW_WRONG_LENGTH >> 8) & 0xFF;
+			message[1] = SW_WRONG_LENGTH & 0xFF;
+			send_response();
+			return;
+		}
 
 		int idx = 7;
 		uint8_t challenge_param[32], application_param[32];
@@ -310,7 +328,15 @@ void handle_msg()
 
 		uint8_t key_handle_len = message[idx];
 		idx++;
-		// TODO: validate that key_handle_len is 48
+		// validate that key_handle_len is 48
+		if (key_handle_len != 48)
+		{
+			data_len = 2;
+			message[0] = (SW_WRONG_DATA >> 8) & 0xFF;
+			message[1] = SW_WRONG_DATA & 0xFF;
+			send_response();
+			return;
+		}
 		uint8_t nonce[16];
 		uint8_t mac[32];
 		memcpy(nonce, message + idx, 16);
@@ -346,6 +372,8 @@ void handle_msg()
 			data_len = 2;
 			message[0] = (SW_WRONG_DATA >> 8) & 0xFF;
 			message[1] = SW_WRONG_DATA & 0xFF;
+			send_response();
+			return;
 		}
 		if (p1 == 0x07) // check only
 		{
@@ -353,6 +381,8 @@ void handle_msg()
 			data_len = 2;
 			message[0] = (SW_CONDITIONS_NOT_SATISFIED >> 8) & 0xFF;
 			message[1] = SW_CONDITIONS_NOT_SATISFIED & 0xFF;
+			send_response();
+			return;
 		}
 		else if (p1 == 0x03 || p1 == 0x08)
 		{
@@ -469,16 +499,27 @@ void handle_msg()
 			data_len = idx;
 			counter_storage.write(counter + 1);
 			send_response();
+			return;
 		}
 	}
 	else if (ins == U2F_VERSION)
 	{
-		Serial.println("unimplemented u2f command");
+		data_len = 8;
+		memcpy(message, "U2F_V2", 6);
+		message[6] = (SW_NO_ERROR >> 8) & 0xFF;
+		message[7] = SW_NO_ERROR & 0xFF;
+		send_response();
+		return;
 	}
 	else
 	{
-		// TODO: send error
+		// unknown instruction
 		Serial.println("ERROR: UNKNOWN U2F COMMAND");
+		data_len = 2;
+		message[0] = (SW_INS_NOT_SUPPORTED >> 8) & 0xFF;
+		message[1] = SW_INS_NOT_SUPPORTED & 0xFF;
+		send_response();
+		return;
 	}
 }
 
@@ -494,21 +535,17 @@ void handle()
 	}
 	else if (cmd == U2FHID_PING || cmd == U2FHID_SYNC)
 	{
+		// TODO: implement
 		Serial.println("unimplemented command");
 	}
 	else
 	{
 		Serial.println("ERROR: UNKNOWN COMMAND");
-		uint8_t packet[PACKET_SIZE];
-		packet[0] = (cid >> 24) & 0xFF;
-		packet[1] = (cid >> 16) & 0xFF;
-		packet[2] = (cid >> 8) & 0xFF;
-		packet[3] = cid & 0xFF;
-		packet[4] = U2FHID_ERROR;
-		packet[5] = (1 >> 8) & 0xFF;
-		packet[6] = 1 & 0xFF;
-		packet[7] = ERR_INVALID_CMD;
-		usb_hid.sendReport(0, packet, PACKET_SIZE);
+		cmd = U2FHID_ERROR;
+		data_len = 1;
+		message[0] = ERR_INVALID_CMD;
+		send_response();
+		return;
 	}
 }
 
@@ -544,8 +581,13 @@ void parse_packet(uint8_t const *packet)
 		}
 		else
 		{
-			// TODO: send error response
+			// send error response
 			Serial.println("ERROR: BUSY");
+			cmd = U2FHID_ERROR;
+			data_len = 1;
+			message[0] = ERR_CHANNEL_BUSY;
+			send_response();
+			return;
 		}
 	}
 	else
@@ -553,17 +595,29 @@ void parse_packet(uint8_t const *packet)
 		if (!processing_message) // ignore spurious continuation packets
 		{
 			Serial.println("ERROR: SPURIOUS CONTINUATION PACKET");
+			cmd = U2FHID_ERROR;
+			data_len = 1;
+			message[0] = ERR_INVALID_SEQ;
+			send_response();
 			return;
 		}
 		if (packet_cid != cid)
 		{
-			// TODO: send error
 			Serial.println("ERROR: CID MISMATCH");
+			cmd = U2FHID_ERROR;
+			data_len = 1;
+			message[0] = ERR_CHANNEL_BUSY;
+			send_response();
+			return;
 		}
 		if (cmd_or_seq != next_cont_packet)
 		{
-			// TODO: send error
 			Serial.println("ERROR: CONTINUATION PACKET OUT OF ORDER");
+			cmd = U2FHID_ERROR;
+			data_len = 1;
+			message[0] = ERR_INVALID_SEQ;
+			send_response();
+			return;
 		}
 		int bytes_needed = data_len - data_cursor;
 		int data_end = min(PACKET_SIZE - 5, bytes_needed);

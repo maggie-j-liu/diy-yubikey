@@ -522,14 +522,13 @@ void handle()
 	{
 		handle_msg();
 	}
-	else if (cmd == U2FHID_PING || cmd == U2FHID_SYNC)
+	else if (cmd == U2FHID_PING)
 	{
-		// TODO: implement
-		Serial.println("unimplemented command");
+		send_response();
 	}
 	else
 	{
-		Serial.println("ERROR: UNKNOWN COMMAND");
+		// Serial.println("ERROR: UNKNOWN COMMAND");
 		cmd = U2FHID_ERROR;
 		data_len = 1;
 		message[0] = ERR_INVALID_CMD;
@@ -570,6 +569,12 @@ void parse_packet(uint8_t const *packet)
 		}
 		else
 		{
+			// abort current transaction
+			if (cmd_or_seq == U2FHID_SYNC)
+			{
+				processing_message = false;
+				return;
+			}
 			// send error response
 			Serial.println("ERROR: BUSY");
 			cmd = U2FHID_ERROR;

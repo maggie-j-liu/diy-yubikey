@@ -308,17 +308,6 @@ void handle_msg()
 	}
 	else if (ins == U2F_AUTHENTICATE)
 	{
-		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
-		// validate that req_data_len == 64
-		if (req_data_len != 64)
-		{
-			data_len = 2;
-			message[0] = (SW_WRONG_LENGTH >> 8) & 0xFF;
-			message[1] = SW_WRONG_LENGTH & 0xFF;
-			send_response();
-			return;
-		}
-
 		int idx = 7;
 		uint8_t challenge_param[32], application_param[32];
 		memcpy(challenge_param, message + idx, 32);

@@ -201,8 +201,8 @@ void handle_msg()
 		idx += 16;
 		memcpy(message + idx, mac, 32);
 		idx += 32;
-		memcpy(message + idx, ATTESTATION_CERT, 319);
-		idx += 319;
+		memcpy(message + idx, ATTESTATION_CERT, sizeof(ATTESTATION_CERT));
+		idx += sizeof(ATTESTATION_CERT);
 
 		Sha256.init();
 		uint8_t reserved = 0x00;

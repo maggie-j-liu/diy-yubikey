@@ -5,14 +5,22 @@
 #include <uECC.h>
 #include <sha256.h>
 
+void sha_write(uint8_t *data, int len)
+{
+	for (int i = 0; i < len; i++)
+	{
+		Sha256.write(data[i]);
+	}
+}
+
 void handle_msg()
 {
 	uint8_t ins = message[1];
 	uint8_t p1 = message[2];
 	if (ins == U2F_REGISTER)
 	{
-		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
 		// validate that req_data_len == 64
+		int req_data_len = (message[4] << 16) | (message[5] << 8) | message[6];
 		if (req_data_len != 64)
 		{
 			data_len = 2;
@@ -28,38 +36,26 @@ void handle_msg()
 		uint8_t challenge_param[32], application_param[32];
 		memcpy(challenge_param, message + 7, 32);
 		memcpy(application_param, message + 7 + 32, 32);
+
 		uint8_t public_key[65];
-		// uint8_t private_key[32];
 		public_key[0] = 0x04;
-		// print_buffer(public_key, 65);
-		// uECC_make_key(public_key + 1, private_key, uECC_secp256r1());
+
+		// generate a random nonce
 		uint8_t nonce[16];
 		for (int i = 0; i < 16; i++)
 		{
 			nonce[i] = random(256) & 0xFF;
 		}
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(application_param[i]);
-		}
-		for (int i = 0; i < 16; i++)
-		{
-			Sha256.write(nonce[i]);
-		}
+		sha_write(application_param, 32);
+		sha_write(nonce, 16);
 		uint8_t private_key[32];
 		memcpy(private_key, Sha256.resultHmac(), 32);
 		int computed = uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(application_param[i]);
-		}
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(private_key[i]);
-		}
+		sha_write(application_param, 32);
+		sha_write(private_key, 32);
 		uint8_t mac[32];
 		memcpy(mac, Sha256.resultHmac(), 32);
 
@@ -80,26 +76,11 @@ void handle_msg()
 		Sha256.init();
 		uint8_t reserved = 0x00;
 		Sha256.write(reserved);
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(application_param[i]);
-		}
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(challenge_param[i]);
-		}
-		for (int i = 0; i < 16; i++)
-		{
-			Sha256.write(nonce[i]);
-		}
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(mac[i]);
-		}
-		for (int i = 0; i < 65; i++)
-		{
-			Sha256.write(public_key[i]);
-		}
+		sha_write(application_param, 32);
+		sha_write(challenge_param, 32);
+		sha_write(nonce, 16);
+		sha_write(mac, 32);
+		sha_write(public_key, 65);
 		uint8_t message_hash[32];
 		memcpy(message_hash, Sha256.result(), 32);
 
@@ -206,26 +187,14 @@ void handle_msg()
 		memcpy(mac, message + idx, 32);
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(application_param[i]);
-		}
-		for (int i = 0; i < 16; i++)
-		{
-			Sha256.write(nonce[i]);
-		}
+		sha_write(application_param, 32);
+		sha_write(nonce, 16);
 		uint8_t private_key[32];
 		memcpy(private_key, Sha256.resultHmac(), 32);
 
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(application_param[i]);
-		}
-		for (int i = 0; i < 32; i++)
-		{
-			Sha256.write(private_key[i]);
-		}
+		sha_write(application_param, 32);
+		sha_write(private_key, 32);
 		uint8_t computed_mac[32];
 		memcpy(computed_mac, Sha256.resultHmac(), 32);
 
@@ -262,19 +231,10 @@ void handle_msg()
 			uint8_t user_presence = p1 == 0x03 ? 0x01 : 0x00;
 
 			Sha256.init();
-			for (int i = 0; i < 32; i++)
-			{
-				Sha256.write(application_param[i]);
-			}
+			sha_write(application_param, 32);
 			Sha256.write(user_presence);
-			for (int i = 0; i < 4; i++)
-			{
-				Sha256.write(counter_bytes[i]);
-			}
-			for (int i = 0; i < 32; i++)
-			{
-				Sha256.write(challenge_param[i]);
-			}
+			sha_write(counter_bytes, 4);
+			sha_write(challenge_param, 32);
 			uint8_t message_hash[32];
 			memcpy(message_hash, Sha256.result(), 32);
 

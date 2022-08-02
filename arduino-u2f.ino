@@ -2,7 +2,6 @@
 #include "u2f_hid.h"
 #include <uECC.h>
 #include "keys.h"
-#include <sha256.h>
 #include <FlashStorage.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_FreeTouch.h>

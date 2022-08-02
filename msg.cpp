@@ -13,6 +13,44 @@ void sha_write(uint8_t *data, int len)
 	}
 }
 
+// converts signature to asn.1 format and adds it to the message, starting at idx
+int sig_to_asn1(int idx, uint8_t *signature)
+{
+	message[idx] = 0x30;
+	idx++;
+	int b1_idx = idx;
+	idx++;
+	uint8_t b1 = 68;
+	for (int i = 0; i < 2; i++)
+	{
+		message[idx] = 0x02;
+		idx++;
+		if (signature[i * 32] > 0x7F)
+		{
+			message[idx] = 33;
+			idx++;
+			message[idx] = 0;
+			idx++;
+			b1++;
+		}
+		else
+		{
+			message[idx] = 32;
+			idx++;
+		}
+		memcpy(message + idx, signature + i * 32, 32); // copy r or s value
+		idx += 32;
+	}
+
+	message[b1_idx] = b1;
+
+	message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
+	idx++;
+	message[idx] = SW_NO_ERROR & 0xFF;
+	idx++;
+	return idx;
+}
+
 void handle_msg()
 {
 	uint8_t ins = message[1];
@@ -46,13 +84,19 @@ void handle_msg()
 		{
 			nonce[i] = random(256) & 0xFF;
 		}
+
+		// use the application param and random nonce and run them through hmac-sha256 using the master key
+		// the output is the private key
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
 		sha_write(application_param, 32);
 		sha_write(nonce, 16);
 		uint8_t private_key[32];
 		memcpy(private_key, Sha256.resultHmac(), 32);
-		int computed = uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
 
+		uECC_compute_public_key(private_key, public_key + 1, uECC_secp256r1());
+
+		// run the application param and the newly generated private key and run them through hmac-sha256 again, using the same master key
+		// the result is MAC used in the key handle
 		Sha256.initHmac(MASTER_KEY, sizeof(MASTER_KEY));
 		sha_write(application_param, 32);
 		sha_write(private_key, 32);
@@ -60,18 +104,29 @@ void handle_msg()
 		memcpy(mac, Sha256.resultHmac(), 32);
 
 		int idx = 0;
+		// a reserved byte, which for legacy reasons has the value 0x05
 		message[idx] = 0x05;
 		idx++;
+
+		// user public key
 		memcpy(message + idx, public_key, 65);
 		idx += 65;
-		message[idx] = 16 + 32; // length of key handle
+
+		// length of key handle
+		message[idx] = 16 + 32;
 		idx++;
+
+		// key handle, made up of the random nonce and the MAC
 		memcpy(message + idx, nonce, 16);
 		idx += 16;
 		memcpy(message + idx, mac, 32);
 		idx += 32;
+
+		// attestation certificate
 		memcpy(message + idx, ATTESTATION_CERT, sizeof(ATTESTATION_CERT));
 		idx += sizeof(ATTESTATION_CERT);
+
+		// generate signature
 
 		Sha256.init();
 		uint8_t reserved = 0x00;
@@ -88,51 +143,8 @@ void handle_msg()
 		uECC_sign(ATTESTATION_KEY, message_hash, 32, signature, uECC_secp256r1());
 
 		// convert signature to asn.1 format
-		message[idx] = 0x30;
-		idx++;
-		int b1_idx = idx;
-		idx++;
-		uint8_t b1 = 68;
-		message[idx] = 0x02;
-		idx++;
-		if (signature[0] > 0x7F)
-		{
-			message[idx] = 33;
-			idx++;
-			message[idx] = 0;
-			idx++;
-			b1++;
-		}
-		else
-		{
-			message[idx] = 32;
-			idx++;
-		}
-		memcpy(message + idx, signature, 32); // copy r value
-		idx += 32;
-		message[idx] = 0x02;
-		idx++;
-		if (signature[32] > 0x7F)
-		{
-			message[idx] = 33;
-			idx++;
-			message[idx] = 0;
-			idx++;
-			b1++;
-		}
-		else
-		{
-			message[idx] = 32;
-			idx++;
-		}
-		memcpy(message + idx, signature + 32, 32); // copy s value
-		idx += 32;
-		message[b1_idx] = b1;
+		idx = sig_to_asn1(idx, signature);
 
-		message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
-		idx++;
-		message[idx] = SW_NO_ERROR & 0xFF;
-		idx++;
 		data_len = idx;
 
 		// confirm user presence
@@ -273,52 +285,10 @@ void handle_msg()
 			idx += 4;
 
 			// convert signature to asn.1 format
-			message[idx] = 0x30;
-			idx++;
-			int b1_idx = idx;
-			idx++;
-			uint8_t b1 = 68;
-			message[idx] = 0x02;
-			idx++;
-			if (signature[0] > 0x7F)
-			{
-				message[idx] = 33;
-				idx++;
-				message[idx] = 0;
-				idx++;
-				b1++;
-			}
-			else
-			{
-				message[idx] = 32;
-				idx++;
-			}
-			memcpy(message + idx, signature, 32); // copy r value
-			idx += 32;
-			message[idx] = 0x02;
-			idx++;
-			if (signature[32] > 0x7F)
-			{
-				message[idx] = 33;
-				idx++;
-				message[idx] = 0;
-				idx++;
-				b1++;
-			}
-			else
-			{
-				message[idx] = 32;
-				idx++;
-			}
-			memcpy(message + idx, signature + 32, 32); // copy s value
-			idx += 32;
-			message[b1_idx] = b1;
+			idx = sig_to_asn1(idx, signature);
 
-			message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
-			idx++;
-			message[idx] = SW_NO_ERROR & 0xFF;
-			idx++;
 			data_len = idx;
+
 			counter_storage.write(counter + 1);
 			send_response();
 			return;

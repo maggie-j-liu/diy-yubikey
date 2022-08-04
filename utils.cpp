@@ -2,6 +2,7 @@
 #include "u2f_hid.h"
 #include "variables.h"
 #include <Adafruit_TinyUSB.h>
+#include <sha256.h>
 
 void print_buffer(uint8_t const *buffer, int size = PACKET_SIZE)
 {
@@ -58,4 +59,76 @@ void send_u2fhid_error(uint8_t error_code)
 	data_len = 1;
 	message[0] = error_code;
 	send_response();
+}
+
+void sha_write(uint8_t *data, int len)
+{
+	for (int i = 0; i < len; i++)
+	{
+		Sha256.write(data[i]);
+	}
+}
+
+// formats signature and adds it to the message, starting at idx
+int format_signature(int idx, uint8_t *signature)
+{
+	message[idx] = 0x30;
+	idx++;
+	int b1_idx = idx;
+	idx++;
+	uint8_t b1 = 68;
+	for (int i = 0; i < 2; i++)
+	{
+		message[idx] = 0x02;
+		idx++;
+		if (signature[i * 32] > 0x7F)
+		{
+			message[idx] = 33;
+			idx++;
+			message[idx] = 0;
+			idx++;
+			b1++;
+		}
+		else
+		{
+			message[idx] = 32;
+			idx++;
+		}
+		memcpy(message + idx, signature + i * 32, 32); // copy r or s value
+		idx += 32;
+	}
+
+	message[b1_idx] = b1;
+
+	message[idx] = (SW_NO_ERROR >> 8) & 0xFF;
+	idx++;
+	message[idx] = SW_NO_ERROR & 0xFF;
+	idx++;
+	return idx;
+}
+
+void confirm_user_presence()
+{
+	// confirm user presence
+	for (int i = 0; i < strip.numPixels(); i++)
+	{
+		strip.setPixelColor(i, strip.Color(0, 0, 255));
+	}
+	strip.show();
+
+	while (true)
+	{
+		uint16_t touch2 = touch_pad_2.measure();
+		if (touch2 > 500)
+		{
+			Serial.print("QT 2: ");
+			Serial.println(touch2);
+			for (int i = 0; i < strip.numPixels(); i++)
+			{
+				strip.setPixelColor(i, strip.Color(255, 0, 0));
+			}
+			strip.show();
+			break;
+		}
+	}
 }

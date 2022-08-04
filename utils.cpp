@@ -51,3 +51,11 @@ void send_response()
 		included += to_include;
 	}
 }
+
+void send_u2fhid_error(uint8_t error_code)
+{
+	cmd = U2FHID_ERROR;
+	data_len = 1;
+	message[0] = error_code;
+	send_response();
+}

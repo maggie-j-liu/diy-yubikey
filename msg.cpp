@@ -13,8 +13,8 @@ void sha_write(uint8_t *data, int len)
 	}
 }
 
-// converts signature to asn.1 format and adds it to the message, starting at idx
-int sig_to_asn1(int idx, uint8_t *signature)
+// formats signature and adds it to the message, starting at idx
+int format_signature(int idx, uint8_t *signature)
 {
 	message[idx] = 0x30;
 	idx++;
@@ -142,8 +142,7 @@ void handle_msg()
 		uint8_t signature[64];
 		uECC_sign(ATTESTATION_KEY, message_hash, 32, signature, uECC_secp256r1());
 
-		// convert signature to asn.1 format
-		idx = sig_to_asn1(idx, signature);
+		idx = format_signature(idx, signature);
 
 		data_len = idx;
 
@@ -284,8 +283,7 @@ void handle_msg()
 			memcpy(message + idx, counter_bytes, 4);
 			idx += 4;
 
-			// convert signature to asn.1 format
-			idx = sig_to_asn1(idx, signature);
+			idx = format_signature(idx, signature);
 
 			data_len = idx;
 

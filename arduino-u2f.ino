@@ -80,10 +80,7 @@ void handle()
 	else
 	{
 		// Serial.println("ERROR: UNKNOWN COMMAND");
-		cmd = U2FHID_ERROR;
-		data_len = 1;
-		message[0] = ERR_INVALID_CMD;
-		send_response();
+		send_u2fhid_error(ERR_INVALID_CMD);
 		return;
 	}
 }
@@ -128,10 +125,7 @@ void parse_packet(uint8_t const *packet)
 			}
 			// send error response
 			Serial.println("ERROR: BUSY");
-			cmd = U2FHID_ERROR;
-			data_len = 1;
-			message[0] = ERR_CHANNEL_BUSY;
-			send_response();
+			send_u2fhid_error(ERR_CHANNEL_BUSY);
 			return;
 		}
 	}
@@ -140,28 +134,19 @@ void parse_packet(uint8_t const *packet)
 		if (!processing_message) // ignore spurious continuation packets
 		{
 			Serial.println("ERROR: SPURIOUS CONTINUATION PACKET");
-			cmd = U2FHID_ERROR;
-			data_len = 1;
-			message[0] = ERR_INVALID_SEQ;
-			send_response();
+			send_u2fhid_error(ERR_INVALID_SEQ);
 			return;
 		}
 		if (packet_cid != cid)
 		{
 			Serial.println("ERROR: CID MISMATCH");
-			cmd = U2FHID_ERROR;
-			data_len = 1;
-			message[0] = ERR_CHANNEL_BUSY;
-			send_response();
+			send_u2fhid_error(ERR_CHANNEL_BUSY);
 			return;
 		}
 		if (cmd_or_seq != next_cont_packet)
 		{
 			Serial.println("ERROR: CONTINUATION PACKET OUT OF ORDER");
-			cmd = U2FHID_ERROR;
-			data_len = 1;
-			message[0] = ERR_INVALID_SEQ;
-			send_response();
+			send_u2fhid_error(ERR_INVALID_SEQ);
 			return;
 		}
 		int bytes_needed = data_len - data_cursor;

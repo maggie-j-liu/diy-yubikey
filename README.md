@@ -2,8 +2,6 @@
 
 There have already been keys generated and placed in `keys.h` to make the code run, but you should regenerate and add your own keys.
 
-```
-
 To generate the master key, run
 
 ```sh
